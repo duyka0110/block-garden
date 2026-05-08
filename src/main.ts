@@ -163,8 +163,9 @@ function shapeBounds(shape: Shape): { w: number; h: number } {
 }
 
 function generateTray(): Shape[] {
-  const threeCellShapes = SHAPE_POOL.filter((shape) => shape.cells.length === 3)
-  const randomShape = () => pick(SHAPE_POOL)
+  const allowedShapes = SHAPE_POOL.filter((shape) => shape.cells.length <= 5)
+  const threeCellShapes = allowedShapes.filter((shape) => shape.cells.length === 3)
+  const randomShape = () => pick(allowedShapes)
   const guaranteedThree = pick(threeCellShapes)
   const trayLocal = [guaranteedThree, randomShape(), randomShape()]
 
