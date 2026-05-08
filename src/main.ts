@@ -531,7 +531,7 @@ function updateCanvasSize(): void {
     width = (height * LOGICAL_W) / LOGICAL_H
   }
 
-  const outerFrameBottomCrop = 180
+  const outerFrameBottomCrop = 90
   const visibleHeight = Math.max(220, height - outerFrameBottomCrop)
   viewportWrap.style.height = `${Math.floor(visibleHeight + 8)}px`
   viewportWrap.style.maxHeight = `${Math.floor(visibleHeight + 8)}px`
@@ -597,7 +597,7 @@ function drawBlock(
 function draw(): void {
   ctx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
 
-  const frameBottomInset = 96
+  const frameBottomInset = 48
   drawRoundedRect(
     FRAME_PAD,
     FRAME_PAD,
