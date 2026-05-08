@@ -7,11 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "build:pages": "rm -rf docs && tsc && vite build --outDir docs && touch docs/.nojekyll",
+    "deploy": "npm run build:pages"
   },
   "devDependencies": {
-    "gh-pages": "^6.3.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.10"
   }
