@@ -4,8 +4,10 @@ import {
   DRAG_LIFT_Y,
   ELEMENT_COLORS,
   ELEMENT_ICONS,
+  OCCUPIED_TILE_COLORS,
   ELEMENTS,
   FIXED_ELEMENT_PATTERN,
+  generateConstrainedElementGrid,
   LOGICAL_H,
   LOGICAL_W,
   PLANT_TEMPLATES,
@@ -148,10 +150,13 @@ function pick<T>(arr: T[]): T {
 }
 
 function createBoard(mode: MapMode): Cell[][] {
-  return Array.from({ length: BOARD_SIZE }, (_, y) =>
-    Array.from({ length: BOARD_SIZE }, (_, x) => ({
+  const elementGrid =
+    mode === 'fixed' ? FIXED_ELEMENT_PATTERN : generateConstrainedElementGrid(BOARD_SIZE)
+  return elementGrid.map((row) =>
+    row.map((element) => ({
       occupied: false,
-      element: mode === 'fixed' ? FIXED_ELEMENT_PATTERN[y][x] : pick(ELEMENTS),
+      element,
+      undistributed: 0,
     })),
   )
 }
@@ -163,11 +168,10 @@ function shapeBounds(shape: Shape): { w: number; h: number } {
 }
 
 function generateTray(): Shape[] {
-  const allowedShapes = SHAPE_POOL.filter((shape) => shape.cells.length <= 5)
+  const allowedShapes = SHAPE_POOL.filter((shape) => shape.cells.length <= 4)
   const threeCellShapes = allowedShapes.filter((shape) => shape.cells.length === 3)
   const randomShape = () => pick(allowedShapes)
-  const guaranteedThree = pick(threeCellShapes)
-  const trayLocal = [guaranteedThree, randomShape(), randomShape()]
+  const trayLocal = [pick(threeCellShapes), randomShape(), randomShape()]
 
   // Shuffle so the guaranteed 3-cell block can appear in any slot.
   for (let i = trayLocal.length - 1; i > 0; i -= 1) {
@@ -292,19 +296,85 @@ function canPlace(shape: Shape, col: number, row: number): boolean {
   })
 }
 
-function applyGrowth(distribution: Record<ElementType, number>, eligiblePlants: Plant[]): void {
-  for (const element of ELEMENTS) {
-    const amount = distribution[element]
-    if (amount <= 0 || eligiblePlants.length === 0) {
+interface ElementGrant {
+  col: number
+  row: number
+  element: ElementType
+  amount: number
+  plants: Plant[]
+}
+
+function unfinishedPlantsAdjacentToCell(row: number, col: number): Plant[] {
+  return plants.filter(
+    (plant) =>
+      !plant.grown &&
+      plant.slots.some((slotIndex) => {
+        const slot = RING_SLOTS[slotIndex]
+        return slot.adjacentRows.includes(row) || slot.adjacentCols.includes(col)
+      }),
+  )
+}
+
+function unfinishedPlantsForClear(fullRows: number[], fullCols: number[]): Plant[] {
+  return plants.filter(
+    (plant) =>
+      !plant.grown &&
+      plant.slots.some((slotIndex) => {
+        const slot = RING_SLOTS[slotIndex]
+        return (
+          fullRows.some((r) => slot.adjacentRows.includes(r)) ||
+          fullCols.some((c) => slot.adjacentCols.includes(c))
+        )
+      }),
+  )
+}
+
+function resolveElementGrants(
+  toClear: Set<string>,
+  fullRows: number[],
+  fullCols: number[],
+): ElementGrant[] {
+  const fallbackPlants = unfinishedPlantsForClear(fullRows, fullCols)
+  const grants: ElementGrant[] = []
+
+  for (const key of toClear) {
+    const [colStr, rowStr] = key.split(',')
+    const col = Number(colStr)
+    const row = Number(rowStr)
+    const cell = board[row][col]
+    const amount = 1 + cell.undistributed
+
+    cell.occupied = false
+
+    let targets = unfinishedPlantsAdjacentToCell(row, col)
+    if (targets.length === 0) {
+      targets = fallbackPlants
+    }
+
+    if (targets.length > 0) {
+      cell.undistributed = 0
+      grants.push({ col, row, element: cell.element, amount, plants: targets })
+    } else {
+      cell.undistributed = amount
+    }
+  }
+
+  return grants
+}
+
+function applyGrowthFromGrants(grants: ElementGrant[]): void {
+  for (const grant of grants) {
+    const recipients = grant.plants.filter((plant) => !plant.grown)
+    if (recipients.length === 0 || grant.amount <= 0) {
       continue
     }
 
-    const base = Math.floor(amount / eligiblePlants.length)
-    let remainder = amount % eligiblePlants.length
+    const base = Math.floor(grant.amount / recipients.length)
+    let remainder = grant.amount % recipients.length
 
-    for (const plant of eligiblePlants) {
+    for (const plant of recipients) {
       const delta = base + (remainder > 0 ? 1 : 0)
-      plant.progress[element] += delta
+      plant.progress[grant.element] += delta
       if (remainder > 0) {
         remainder -= 1
       }
@@ -346,23 +416,20 @@ function finalizeTurnAfterPlacement(): void {
   renderPlantsPanel()
 }
 
-function startDistributionAnimation(
-  clearedCells: Array<{ col: number; row: number; element: ElementType }>,
-  eligiblePlants: Plant[],
-): void {
-  if (eligiblePlants.length === 0 || clearedCells.length === 0) {
+function startDistributionAnimation(grants: ElementGrant[]): void {
+  if (grants.length === 0) {
     flyingElements = []
     isResolvingAnimation = false
     return
   }
 
-  const targets = eligiblePlants.map((plant) => getPlantCenter(plant))
-  flyingElements = clearedCells.map((cell, idx) => {
-    const startX = layout.boardX + cell.col * layout.boardCell + layout.boardCell / 2
-    const startY = layout.boardY + cell.row * layout.boardCell + layout.boardCell / 2
-    const target = targets[idx % targets.length]
+  flyingElements = grants.map((grant, idx) => {
+    const recipients = grant.plants.filter((plant) => !plant.grown)
+    const target = getPlantCenter(recipients[idx % recipients.length])
+    const startX = layout.boardX + grant.col * layout.boardCell + layout.boardCell / 2
+    const startY = layout.boardY + grant.row * layout.boardCell + layout.boardCell / 2
     return {
-      element: cell.element,
+      element: grant.element,
       startX,
       startY,
       endX: target.x,
@@ -413,49 +480,33 @@ function processClears(): boolean {
     }
   }
 
-  const earned: Record<ElementType, number> = { Water: 0, Sun: 0, Nutrient: 0, Soil: 0 }
-  const clearedCells: Array<{ col: number; row: number; element: ElementType }> = []
-  for (const key of toClear) {
+  const grants = resolveElementGrants(toClear, fullRows, fullCols)
+  const distributedTotal = grants.reduce((sum, grant) => sum + grant.amount, 0)
+  const bankedTotal = [...toClear].reduce((sum, key) => {
     const [colStr, rowStr] = key.split(',')
-    const col = Number(colStr)
-    const row = Number(rowStr)
-    const element = board[row][col].element
-    earned[element] += 1
-    clearedCells.push({ col, row, element })
-  }
+    return sum + board[Number(rowStr)][Number(colStr)].undistributed
+  }, 0)
 
-  const eligible = plants.filter((plant) =>
-    plant.slots.some((slotIndex) => {
-      const slot = RING_SLOTS[slotIndex]
-      return fullRows.some((row) => slot.adjacentRows.includes(row)) || fullCols.some((col) => slot.adjacentCols.includes(col))
-    }),
-  )
+  const statusParts = [
+    `Cleared ${fullRows.length} row(s), ${fullCols.length} col(s).`,
+    distributedTotal > 0 ? `Sent ${distributedTotal} to plants.` : '',
+    bankedTotal > 0 ? `Banked ${bankedTotal} on tiles.` : '',
+  ].filter(Boolean)
+  message = statusParts.join(' ')
 
-  for (const key of toClear) {
-    const [colStr, rowStr] = key.split(',')
-    const col = Number(colStr)
-    const row = Number(rowStr)
-    board[row][col].occupied = false
-  }
-
-  const earnedText = ELEMENTS.map((el) => `${el.slice(0, 1)}:${earned[el]}`).join(' ')
-  message = `Cleared ${fullRows.length} row(s), ${fullCols.length} col(s). Earned ${earnedText}`
-  startDistributionAnimation(clearedCells, eligible)
+  startDistributionAnimation(grants)
 
   if (!isResolvingAnimation) {
-    applyGrowth(earned, eligible)
+    applyGrowthFromGrants(grants)
     finalizeTurnAfterPlacement()
     return true
   }
 
-  // Apply growth after animation finishes so feedback matches outcomes.
-  const growthPayload = { ...earned }
-  const eligiblePayload = [...eligible]
-  const completeAnimation = () => {
-    applyGrowth(growthPayload, eligiblePayload)
+  const grantsPayload = grants.map((grant) => ({ ...grant, plants: [...grant.plants] }))
+  pendingAnimationComplete = () => {
+    applyGrowthFromGrants(grantsPayload)
     finalizeTurnAfterPlacement()
   }
-  pendingAnimationComplete = completeAnimation
   return true
 }
 
@@ -474,7 +525,9 @@ function hasAnyMove(): boolean {
 
 function placeBlock(shape: Shape, col: number, row: number): void {
   for (const cell of shape.cells) {
-    board[row + cell.y][col + cell.x].occupied = true
+    const tile = board[row + cell.y][col + cell.x]
+    tile.occupied = true
+    tile.undistributed = 0
   }
 }
 
@@ -628,22 +681,35 @@ function draw(): void {
 
   for (let row = 0; row < BOARD_SIZE; row += 1) {
     for (let col = 0; col < BOARD_SIZE; col += 1) {
+      const cell = board[row][col]
+      const hasBanked = !cell.occupied && cell.undistributed > 0
       const x = boardX + col * boardCell
       const y = boardY + row * boardCell
       drawRoundedRect(x + 1, y + 1, boardCell - 2, boardCell - 2, 1)
-      ctx.fillStyle = '#1B2E1C'
+      ctx.fillStyle =
+        cell.occupied || hasBanked ? OCCUPIED_TILE_COLORS[cell.element] : '#1B2E1C'
       ctx.fill()
-      ctx.strokeStyle = board[row][col].occupied
-        ? 'rgba(88, 255, 136, 1)'
-        : hexToRgba(ELEMENT_COLORS[board[row][col].element], 0.35)
-      ctx.lineWidth = board[row][col].occupied ? 4 : 1
+      ctx.strokeStyle =
+        cell.occupied || hasBanked
+          ? hasBanked
+            ? '#FFF4B0'
+            : '#FFFFFF'
+          : hexToRgba(ELEMENT_COLORS[cell.element], 0.35)
+      ctx.lineWidth = cell.occupied || hasBanked ? 3 : 1
       ctx.stroke()
       ctx.fillStyle = '#DDF2E0'
       ctx.font = `${elementIconSize}px system-ui`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.globalAlpha = board[row][col].occupied ? 1 : 0.5
-      ctx.fillText(ELEMENT_ICONS[board[row][col].element], x + boardCell / 2, y + boardCell / 2 + 1)
+      ctx.globalAlpha = cell.occupied || hasBanked ? 1 : 0.5
+      ctx.fillText(ELEMENT_ICONS[cell.element], x + boardCell / 2, y + boardCell / 2 + 1)
+      if (hasBanked) {
+        ctx.fillStyle = '#FFF4B0'
+        ctx.font = `bold ${Math.max(10, Math.floor(boardCell * 0.22))}px system-ui`
+        ctx.textAlign = 'right'
+        ctx.textBaseline = 'bottom'
+        ctx.fillText(`+${cell.undistributed}`, x + boardCell - 4, y + boardCell - 4)
+      }
       ctx.globalAlpha = 1
     }
   }

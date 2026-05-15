@@ -15,6 +15,8 @@ export interface PlantTemplateData {
 export interface Cell {
   occupied: boolean
   element: ElementType
+  /** Earned element units waiting on this tile when no plant could receive them. */
+  undistributed: number
 }
 
 export interface Plant {
